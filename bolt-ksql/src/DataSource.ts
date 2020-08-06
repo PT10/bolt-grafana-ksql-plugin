@@ -142,8 +142,15 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
       const savedColumnData: any = {};
       valJson.forEach((rowObj: any) => {
         if (rowObj['header']) {
-          headerFields = {};
-          columnSeq = {};
+          Object.keys(headerFields).forEach(function(key) {
+            delete headerFields[key];
+          });
+          Object.keys(columnSeq).forEach(function(key) {
+            delete columnSeq[key];
+          });
+          if (frame.fields) {
+            frame.fields.splice(0, frame.fields.length);
+          }
 
           rowObj['header']['schema'].split(',').map((f: any) => {
             const matches = f.match(/`(.*?)` (.*)/);

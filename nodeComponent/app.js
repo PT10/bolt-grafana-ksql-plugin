@@ -7,7 +7,7 @@ const opts = {
 }
 
 const log = SimpleNodeLogger.createSimpleLogger( opts );
-log.setLevel('debug');
+log.setLevel('info');
 
 const port = 3001;
 let activeReqSeq = 0;
