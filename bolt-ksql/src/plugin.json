@@ -1,0 +1,39 @@
+{
+  "type": "datasource",
+  "name": "bolt-ksql-stream",
+  "id": "bolt-analytics-ksql-test-stream",
+  "metrics": true,
+  "info": {
+    "description": "Bolt plugin for KSQL streaming datasource",
+    "author": {
+      "name": "prasad",
+      "url": ""
+    },
+    "keywords": [
+      "Bolt",
+      "KSQL",
+      "Streaming"
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [
+      {
+        "name": "Website",
+        "url": "https://github.com/grafana/simple-datasource"
+      },
+      {
+        "name": "License",
+        "url": "https://github.com/grafana/simple-datasource/blob/master/LICENSE"
+      }
+    ],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaVersion": "6.5.x",
+    "plugins": []
+  }
+}
