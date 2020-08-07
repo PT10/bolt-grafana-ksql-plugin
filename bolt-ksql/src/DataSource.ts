@@ -27,10 +27,17 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     const streams = options.targets.map(target => {
       const query = defaults(target, defaultQuery);
       return Observable.create((s: any) => {
-        const { range } = options;
-        const from = new Date(range!.from.valueOf());
+        const { range, rangeRaw } = options;
 
-        const queryStr = this.getQueryString(query.query, from.toISOString().slice(0, -1));
+        const from = new Date(range!.from.valueOf());
+        let to: any = undefined;
+
+        if (typeof rangeRaw!.from !== 'string') {
+          // Absolute timewindow
+          to = new Date(range!.to.valueOf()).toISOString().slice(0, -1);
+        }
+
+        const queryStr = this.getQueryString(query.query, from.toISOString().slice(0, -1), to);
         const q = {
           ksql: queryStr,
           streamsProperties: { 'auto.offset.reset': 'earliest' },
@@ -64,21 +71,25 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     const headerFields: any = {};
 
     if (wsConn.readyState === WebSocket.OPEN) {
-      wsConn.send(JSON.stringify({ panelId: panelId, query: q }));
+      wsConn.send(JSON.stringify({ panelId: panelId, query: q, type: 'query' }));
       return;
     } else if (wsConn.readyState === WebSocket.CLOSED) {
       wsConn = new WebSocket(this.baseUrl);
     }
 
     wsConn.onopen = function() {
-      wsConn.send(JSON.stringify({ panelId: panelId, query: q }));
+      wsConn.send(JSON.stringify({ panelId: panelId, query: q, type: 'query' }));
       console.log('WebSocket Client Connected');
     };
 
     wsConn.onmessage = function(m: any) {
-      console.log(m.data);
-      const data = JSON.parse(m.data);
-      partialChunk = me.updateData(data.data, refId, s, headerFields, columnSeq, frame, partialChunk) || '';
+      if (m.error) {
+        console.log(m.error);
+      } else {
+        console.log(m.data);
+        const data = JSON.parse(m.data);
+        partialChunk = me.updateData(data.data, refId, s, headerFields, columnSeq, frame, partialChunk) || '';
+      }
     };
 
     wsConn.onerror = function(e: any) {
@@ -205,18 +216,19 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     }
   }
 
-  getQueryString(queryText: string, rowTimeStr: string) {
+  getQueryString(queryText: string, rowTimeStr: string, rowEndTime?: string) {
+    let clause = " where ROWTIME >= '" + rowTimeStr + "'" + (rowEndTime ? " AND ROWTIME < '" + rowEndTime + "'" : '');
     if (queryText.match(/ where /i)) {
-      queryText = queryText.replace(/ where /i, " where ROWTIME >= '" + rowTimeStr + "' AND ");
+      queryText = queryText.replace(/ where /i, clause + ' AND ');
     } else if (queryText.match(/ WINDOW\s+TUMBLING /i)) {
       const matches: any[] | null = queryText.match(/ WINDOW\s+TUMBLING (\(.*?\))/i);
       if (matches) {
-        queryText = queryText.replace(matches[1], matches[1] + " where ROWTIME >= '" + rowTimeStr + "'");
+        queryText = queryText.replace(matches[1], matches[1] + clause);
       }
     } else {
       const matches: any[] | null = queryText.match(/ from (.*?) /i);
       if (matches && matches[1]) {
-        queryText = queryText.replace(matches[1], matches[1] + " where ROWTIME >= '" + rowTimeStr + "' ");
+        queryText = queryText.replace(matches[1], matches[1] + clause);
       }
     }
 

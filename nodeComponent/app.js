@@ -9,7 +9,7 @@ const opts = {
 const log = SimpleNodeLogger.createSimpleLogger( opts );
 log.setLevel('info');
 
-const port = 3001;
+const port = 3002;
 let activeReqSeq = 0;
 
 const server = http.createServer();
@@ -23,17 +23,19 @@ wsServer.on('request', function(request) {
   const connection = request.accept(null, request.origin);
   connection.on('message', function(message) {
     const reqData = JSON.parse(message.utf8Data);
-    log.info("Running panel id: " + reqData.panelId + " query: ", reqData.query);
+    log.info("Running panel id: " + reqData.panelId + ", query: ", reqData.query + ", type: " + reqData.type);
 
-    let req; 
+    let req;
+    const path = reqData.type === 'query' ? '/query' : '/ksql';
+    const cntType = reqData.type === 'query' ? 'application/json' : 'application/vnd.ksql.v1+json; charset=utf-8';
 
     const options = {
       host: 'localhost',
       protocol: 'http:',
-      path: '/query',
+      path: path,
       port:'9099',
       method: 'POST',
-      headers: {'Content-Type': 'application/json'}
+      headers: {'Content-Type': cntType}
     }
 
     callback = function(response) {
@@ -64,6 +66,7 @@ wsServer.on('request', function(request) {
 
     req.on('error', (err) => {
       log.error("Error in connection for panel: " + reqData.panelId + " Error:" + err);
+      connection.sendUTF(JSON.stringify({ error: err}));
     })
   })
   connection.on('close', function(reasonCode, description) {

@@ -37,9 +37,11 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
   query: BoltQuery;
   backendSrv: any;
   ksqlUrl = '';
+  baseUrl = '';
 
   constructor(props: Props) {
     super(props);
+    this.baseUrl = props.datasource.baseUrl;
     this.ksqlUrl = props.datasource.baseUrl + '/ksql';
     this.backendSrv = getBackendSrv();
 
@@ -50,6 +52,7 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
       ...this.state,
       query: query.query || '',
       error: query.error || '',
+      info: query.info || '',
       parsingStream: query.parsingStream || '',
       filteringStream: query.filteringStream || '',
     };
@@ -62,9 +65,12 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
   }
 
   render() {
-    const { error, parsingStream, filteringStream, query } = this.state;
-    const labelStyle = {
+    const { error, info, parsingStream, filteringStream, query } = this.state;
+    const labelRed = {
       color: 'red',
+    };
+    const labelGreen = {
+      color: 'green',
     };
     return (
       <div>
@@ -72,7 +78,16 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
           <div className="gf-form-inline">
             <div className="gf-form">
               <div className="gf-form">
-                <label style={labelStyle}>{error}</label>
+                <label style={labelRed}>{error}</label>
+              </div>
+            </div>
+          </div>
+        )}
+        {info && (
+          <div className="gf-form-inline">
+            <div className="gf-form">
+              <div className="gf-form">
+                <label style={labelGreen}>{info}</label>
               </div>
             </div>
           </div>
@@ -82,7 +97,7 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
             <div className="gf-form">
               {/*<InlineFormLabel>Parse Stream</InlineFormLabel>*/}
               <FormField
-                label="Parse Stream"
+                label="Parse Stream (Optional)"
                 labelWidth={0}
                 type="text"
                 value={parsingStream}
@@ -148,109 +163,95 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
   };
 
   onChangeQueryDetected = (event: any, _name?: string) => {
-    this.clearError();
-    const stream: any = event.target.value.match(/CREATE STREAM (.*?) .*/i);
-    const table: any = event.target.value.match(/CREATE TABLE (.*?) .*/i);
+    this.setInfo('Stream/Filter creation in progress..');
 
-    if (stream && event.target.name === 'parsingStream') {
-      this.createStreamIfNotExists(stream[1], event.target.value);
-    } else if (table && event.target.name === 'filteringStream') {
-      this.createTable(event.target.value);
-    } else {
-    }
+    this.executeQuery(event.target.value);
   };
 
-  createStreamIfNotExists = (_name: string, _query: string) => {
-    const options = {
-      url: this.ksqlUrl,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/vnd.ksql.v1+json; charset=utf-8' },
-      params: undefined,
-      data: '{"ksql": "LIST STREAMS;"}',
+  executeQuery = (q: any) => {
+    const me = this;
+    let wsConn = new WebSocket(this.baseUrl);
+    const ksqlQuery = { ksql: q, streamsProperties: { 'ksql.streams.auto.offset.reset': 'earliest' } };
+
+    if (wsConn.readyState === WebSocket.OPEN) {
+      wsConn.send(JSON.stringify({ query: ksqlQuery, type: 'stream' }));
+      return;
+    } else if (wsConn.readyState === WebSocket.CLOSED) {
+      wsConn = new WebSocket(this.baseUrl);
+    }
+
+    wsConn.onopen = function() {
+      wsConn.send(JSON.stringify({ query: ksqlQuery, type: 'stream' }));
+      console.log('WebSocket Client Connected');
     };
 
-    this.backendSrv.datasourceRequest(options).then(
-      (response: any) => {
-        if (response.status === 200) {
-          console.log(response);
-          // Check if exists and if not then create
-          const data = response.data;
-          if (data.length > 0) {
-            const str = data[0].streams.find((s: any) => s.type === 'STREAM' && s.name === _name.toUpperCase());
-            if (!str) {
-              this.createParsingStream(_name, _query);
-            } else {
-              console.log('Stream ' + _name + ' already exists');
+    wsConn.onmessage = function(m: any) {
+      if (m.error) {
+        console.log(m.error);
+        me.setError(m.error);
+      } else {
+        console.log(m.data);
+        try {
+          const data = JSON.parse(m.data);
+          if (data.error) {
+            me.setError(JSON.stringify(data.error));
+          } else if (data.data) {
+            try {
+              const details = JSON.parse(data.data);
+              if (details['@type'] === 'statement_error') {
+                me.setError(details.message);
+              } else if (details[0] && details[0]['commandStatus'] && details[0]['commandStatus']['status']) {
+                if (details[0]['commandStatus']['status'].toUpperCase() === 'SUCCESS') {
+                  me.setInfo(details[0]['commandStatus']['message']);
+                } else {
+                  me.setError(details[0]['commandStatus']['message']);
+                }
+              } else {
+                me.setError('Unknown status');
+              }
+            } catch (ex) {
+              me.setError('Unsupported output format');
             }
           }
-        } else {
-          console.log('Error');
+        } catch (ex) {
+          me.setError('Unsupported output format');
         }
-      },
-      (error: any) => {
-        console.log('Error while listing the stream. ' + error);
       }
-    );
-  };
-
-  createParsingStream = (_name: string, _query: string) => {
-    const payload = { ksql: _query, streamsProperties: { 'ksql.streams.auto.offset.reset': 'earliest' } };
-    const options = {
-      url: this.ksqlUrl,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/vnd.ksql.v1+json; charset=utf-8' },
-      params: undefined,
-      data: JSON.stringify(payload),
     };
 
-    this.backendSrv.datasourceRequest(options).then(
-      (response: any) => {
-        if (response.status === 200) {
-          //this.createTable(_query);
-          console.log('Stream ' + _name + ' created successfully');
-        }
-      },
-      (error: any) => {
-        console.log('Error while creating the stream. ' + error);
-        this.setError(error.data.message);
-      }
-    );
-  };
-
-  createTable = (_query: string) => {
-    const payload = { ksql: _query, streamsProperties: { 'ksql.streams.auto.offset.reset': 'earliest' } };
-    const options = {
-      url: this.ksqlUrl,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/vnd.ksql.v1+json; charset=utf-8' },
-      params: undefined,
-      data: JSON.stringify(payload),
+    wsConn.onerror = function(e: any) {
+      console.log(e);
+      me.setError(e);
     };
 
-    this.backendSrv.datasourceRequest(options).then(
-      (response: any) => {
-        if (response.status === 200) {
-          console.log('Filter creation successful');
-        }
-      },
-      (error: any) => {
-        console.log('Error while creating the filter. ' + error.data.message);
-        this.setError(error.data.message);
-      }
-    );
+    wsConn.onclose = function() {
+      console.log('WebSocket Client Closed');
+    };
+
+    return wsConn;
+  };
+
+  setInfo = (info: string) => {
+    this.setState({
+      ...this.state,
+      info: info,
+      error: '',
+    });
+  };
+
+  clear = () => {
+    this.setState({
+      ...this.state,
+      info: '',
+      error: '',
+    });
   };
 
   setError = (error: string) => {
     this.setState({
       ...this.state,
       error: error,
-    });
-  };
-
-  clearError = () => {
-    this.setState({
-      ...this.state,
-      error: '',
+      info: '',
     });
   };
 }
