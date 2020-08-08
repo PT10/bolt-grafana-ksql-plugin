@@ -3,6 +3,7 @@
   "name": "bolt-ksql-stream",
   "id": "bolt-analytics-ksql-test-stream",
   "metrics": true,
+  "streaming": true,
   "info": {
     "description": "Bolt plugin for KSQL streaming datasource",
     "author": {

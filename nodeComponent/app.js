@@ -23,7 +23,7 @@ wsServer.on('request', function(request) {
   const connection = request.accept(null, request.origin);
   connection.on('message', function(message) {
     const reqData = JSON.parse(message.utf8Data);
-    log.info("Running panel id: " + reqData.panelId + ", query: ", reqData.query + ", type: " + reqData.type);
+    log.info("Running panel id: " + reqData.panelId + ", query: ", JSON.stringify(reqData.query) + ", type: " + reqData.type);
 
     let req;
     const path = reqData.type === 'query' ? '/query' : '/ksql';

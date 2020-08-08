@@ -43,10 +43,12 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
           streamsProperties: { 'auto.offset.reset': 'earliest' },
         };
 
-        if (!this.connMap[panelId]) {
-          const wsConn = new WebSocket(this.baseUrl);
-          this.connMap[panelId] = wsConn;
+        if (this.connMap[panelId]) {
+          this.connMap[panelId].close();
         }
+
+        const wsConn = new WebSocket(this.baseUrl);
+        this.connMap[panelId] = wsConn;
 
         //this.runQuery(q, query.refId, s, panelId);
 
@@ -98,8 +100,6 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     };
 
     wsConn.onclose = function() {};
-
-    return wsConn;
   }
 
   updateData(
@@ -150,17 +150,12 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
         return partialChunk;
       }
 
-      const savedColumnData: any = {};
+      let dataFound = false;
       valJson.forEach((rowObj: any) => {
+        const rowResultData: any = {};
         if (rowObj['header']) {
-          Object.keys(headerFields).forEach(function(key) {
-            delete headerFields[key];
-          });
-          Object.keys(columnSeq).forEach(function(key) {
-            delete columnSeq[key];
-          });
-          if (frame.fields) {
-            frame.fields.splice(0, frame.fields.length);
+          if (frame.fields && frame.fields.length > 0) {
+            return;
           }
 
           rowObj['header']['schema'].split(',').map((f: any) => {
@@ -168,6 +163,10 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             headerFields[matches[1]] = matches[2];
           });
           Object.keys(headerFields).forEach((f: string, index: number) => {
+            const field = frame.fields.find((f: any) => f.name === f);
+            if (field) {
+              return;
+            }
             if (f === 'WINDOWSTART') {
               frame.addField({ name: f, type: FieldType.time });
             } else if (['VARCHAR', 'STRING'].includes(headerFields[f].toUpperCase())) {
@@ -178,6 +177,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             columnSeq[index] = f;
           });
         } else {
+          dataFound = true;
           const columns: any[] = rowObj['row']['columns'];
           let stringConcat = '';
           const numericFieldValues: any = {};
@@ -188,26 +188,28 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             } else if (columnName !== 'WINDOWSTART') {
               numericFieldValues[columnName] = col;
             }
-            savedColumnData[columnName] = col;
+            rowResultData[columnName] = col;
           });
           if (false) {
             // stringConcat
             Object.keys(numericFieldValues).forEach((numericFieldName: any) => {
               const concatStr = stringConcat + '_' + numericFieldName;
-              savedColumnData[concatStr] = numericFieldValues[numericFieldName];
+              rowResultData[concatStr] = numericFieldValues[numericFieldName];
               if (!frame.fields.find((f: any) => f.name === concatStr)) {
                 frame.addField({ name: concatStr, type: FieldType.number });
               }
             });
           }
         }
+        frame.add(rowResultData);
+      });
 
-        frame.add(savedColumnData);
+      if (dataFound) {
         subscription.next({
           data: [frame],
           key: refId,
         });
-      });
+      }
 
       return;
     } catch (ex) {
