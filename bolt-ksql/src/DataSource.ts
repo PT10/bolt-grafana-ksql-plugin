@@ -87,15 +87,24 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     wsConn.onmessage = function(m: any) {
       if (m.error) {
         console.log(m.error);
+        s.next({ data: [], error: { message: m.error } });
       } else {
         console.log(m.data);
         const data = JSON.parse(m.data);
-        partialChunk = me.updateData(data.data, refId, s, headerFields, columnSeq, frame, partialChunk) || '';
+        if (data.error) {
+          s.next({ data: [], error: { message: data.error.code || 'Erorr in connection' } });
+        } else {
+          partialChunk = me.updateData(data.data, refId, s, headerFields, columnSeq, frame, partialChunk) || '';
+        }
       }
     };
 
     wsConn.onerror = function(e: any) {
-      console.log(e);
+      if (e.type === 'error') {
+        s.next({ data: [], error: { message: 'Error in web socket connection' } });
+      } else {
+        s.next({ data: [], error: { message: 'Unknown error in connection' } });
+      }
       me.connMap[panelId] = undefined;
     };
 
@@ -176,8 +185,10 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             }
             columnSeq[index] = f;
           });
+        } else if (rowObj['@type'] && rowObj['@type'] === 'statement_error') {
+          subscription.next({ data: [], error: { message: rowObj['message'] } });
+          return;
         } else {
-          dataFound = true;
           const columns: any[] = rowObj['row']['columns'];
           let stringConcat = '';
           const numericFieldValues: any = {};
@@ -201,7 +212,10 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             });
           }
         }
-        frame.add(rowResultData);
+        if (Object.keys(rowResultData).length > 0) {
+          dataFound = true;
+          frame.add(rowResultData);
+        }
       });
 
       if (dataFound) {
@@ -214,6 +228,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
       return;
     } catch (ex) {
       console.log('Exception in fetching the response. skipping the results for this batch. ' + ex);
+      subscription.next({ data: [], error: { message: 'Error in parsing the response' } });
       return;
     }
   }
