@@ -2,6 +2,8 @@ import { DataQuery, DataSourceJsonData } from '@grafana/data';
 
 export interface BoltQuery extends DataQuery {
   query: string;
+  dimention: string;
+  frameSize: number;
   error?: string;
   info?: string;
   parsingStream: string;
@@ -10,6 +12,8 @@ export interface BoltQuery extends DataQuery {
 
 export const defaultQuery: Partial<BoltQuery> = {
   query: '',
+  dimention: 'single',
+  frameSize: 1000,
   error: '',
   info: '',
   parsingStream: '',

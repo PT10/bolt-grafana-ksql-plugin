@@ -52,6 +52,8 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
       ...this.state,
       query: query.query || '',
       error: query.error || '',
+      dimention: query.dimention || 'single',
+      frameSize: query.frameSize || 1000,
       info: query.info || '',
       parsingStream: query.parsingStream || '',
       filteringStream: query.filteringStream || '',
@@ -65,7 +67,7 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
   }
 
   render() {
-    const { error, info, parsingStream, filteringStream, query } = this.state;
+    const { error, info, parsingStream, filteringStream, query, dimention, frameSize } = this.state;
     const labelRed = {
       color: 'red',
     };
@@ -142,6 +144,31 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
             </div>
           </div>
         </div>
+        <div className="gf-form-inline">
+          <div className="gf-form">
+            <div className="gf-form">
+              <InlineFormLabel>Frame type</InlineFormLabel>
+              <select value={dimention} name="dimention" onChange={this.onFieldValueChange}>
+                <option value={'single'}>{'Single'}</option>
+                <option value={'multiple'}>{'Multiple'}</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="gf-form-inline">
+          <div className="gf-form">
+            <div className="gf-form">
+              <FormField
+                label="Frame size"
+                labelWidth={0}
+                type="number"
+                value={frameSize}
+                name="frameSize"
+                onChange={this.onFieldValueChange}
+              ></FormField>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -163,6 +190,9 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
   };
 
   onChangeQueryDetected = (event: any, _name?: string) => {
+    if (!event.target.value) {
+      return;
+    }
     this.setInfo('Stream/Filter creation in progress..');
 
     this.executeQuery(event.target.value);
