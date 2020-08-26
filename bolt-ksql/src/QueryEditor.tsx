@@ -57,6 +57,10 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
       info: query.info || '',
       parsingStream: query.parsingStream || '',
       filteringStream: query.filteringStream || '',
+      cleanupData: query.cleanupData || 'false',
+      cleanupThreshold: query.cleanupThreshold || 'startTime',
+      customCleanupThreshold: query.customCleanupThreshold || 30,
+      oldDataReplacementVal: query.oldDataReplacementVal || 'null',
     };
 
     const { onChange } = this.props;
@@ -67,7 +71,19 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
   }
 
   render() {
-    const { error, info, parsingStream, filteringStream, query, dimention, frameSize } = this.state;
+    const {
+      error,
+      info,
+      parsingStream,
+      filteringStream,
+      query,
+      dimention,
+      frameSize,
+      cleanupData,
+      cleanupThreshold,
+      customCleanupThreshold,
+      oldDataReplacementVal,
+    } = this.state;
     const labelRed = {
       color: 'red',
     };
@@ -169,6 +185,51 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
             </div>
           </div>
         </div>
+        <div className="gf-form-inline">
+          <div className="gf-form">
+            <div className="gf-form">
+              <InlineFormLabel>Cleanup stale data</InlineFormLabel>
+              <select value={cleanupData} name="cleanupData" onChange={this.onFieldValueChange}>
+                <option value={'true'}>{'True'}</option>
+                <option value={'false'}>{'False'}</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        {cleanupData === 'true' && (
+          <div className="gf-form-inline">
+            <div className="gf-form">
+              <InlineFormLabel>Fill old data with</InlineFormLabel>
+              <select value={oldDataReplacementVal} name="oldDataReplacementVal" onChange={this.onFieldValueChange}>
+                <option value={'null'}>{'Null'}</option>
+                <option value={'0'}>{'0'}</option>
+              </select>
+            </div>
+          </div>
+        )}
+        {cleanupData === 'true' && (
+          <div className="gf-form-inline">
+            <div className="gf-form">
+              <InlineFormLabel>Older than</InlineFormLabel>
+              <select value={cleanupThreshold} name="cleanupThreshold" onChange={this.onFieldValueChange}>
+                <option value={'startTime'}>{'Start time'}</option>
+                <option value={'customCleanup'}>{'Last n minutes'}</option>
+              </select>
+            </div>
+            {cleanupThreshold && cleanupThreshold === 'customCleanup' && (
+              <div className="gf-form">
+                <FormField
+                  label="Minutes"
+                  labelWidth={0}
+                  type="number"
+                  value={customCleanupThreshold}
+                  name="customCleanupThreshold"
+                  onChange={this.onFieldValueChange}
+                ></FormField>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   }

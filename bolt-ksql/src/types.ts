@@ -8,6 +8,10 @@ export interface BoltQuery extends DataQuery {
   info?: string;
   parsingStream: string;
   filteringStream: string;
+  cleanupData: string;
+  cleanupThreshold: string;
+  customCleanupThreshold: number;
+  oldDataReplacementVal: string;
 }
 
 export const defaultQuery: Partial<BoltQuery> = {
@@ -18,6 +22,10 @@ export const defaultQuery: Partial<BoltQuery> = {
   info: '',
   parsingStream: '',
   filteringStream: '',
+  cleanupData: 'false',
+  cleanupThreshold: 'startTime',
+  customCleanupThreshold: 30,
+  oldDataReplacementVal: 'null',
 };
 
 /**

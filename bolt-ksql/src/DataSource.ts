@@ -17,6 +17,9 @@ import { Observable, merge } from 'rxjs';
 export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
   baseUrl: string;
   connMap: any = {};
+  frameRefMap: any = {}; // holds all data frames across panels
+  cleanUpMap: any = {}; // panel ID, cleanup status map
+  queryMap: any = {}; // panel ID, query object map
   constructor(instanceSettings: DataSourceInstanceSettings<BoltOptions>) {
     super(instanceSettings);
     this.baseUrl = instanceSettings.url || '';
@@ -27,6 +30,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     const streams = options.targets.map(target => {
       const query = defaults(target, defaultQuery);
       return Observable.create((s: any) => {
+        this.queryMap[panelId] = query;
         const { range, rangeRaw } = options;
 
         const from = new Date(range!.from.valueOf());
@@ -40,7 +44,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
         const queryStr = this.getQueryString(query, from.toISOString().slice(0, -1) + '+0000', to);
         const q = {
           ksql: queryStr,
-          streamsProperties: { 'auto.offset.reset': 'earliest' },
+          streamsProperties: { 'auto.offset.reset': 'earliest', 'commit.interval.ms': 1000 },
         };
 
         if (this.connMap[panelId]) {
@@ -50,7 +54,19 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
         const wsConn = new WebSocket(this.baseUrl);
         this.connMap[panelId] = wsConn;
 
-        //this.runQuery(q, query.refId, s, panelId);
+        if (!this.frameRefMap[panelId]) {
+          this.frameRefMap[panelId] = {};
+        }
+
+        if (query.cleanupData === 'true' && !this.cleanUpMap[panelId]) {
+          this.cleanUpMap[panelId] = true;
+          this.checkAndClean(panelId);
+        }
+
+        this.frameRefMap[panelId]['frameRef'] = {};
+        this.frameRefMap[panelId]['subscription'] = s;
+        this.frameRefMap[panelId]['refId'] = query.refId;
+        this.frameRefMap[panelId]['fromTime'] = rangeRaw!.from;
 
         this.setWsConn(this.connMap[panelId], panelId, q, query, s, to);
       });
@@ -63,7 +79,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     const me = this;
     const columnSeq: any = {};
     let partialChunk = '';
-    const frameRef = {};
+    //const frameRef = {};
     const headerFields: any = {};
 
     if (wsConn.readyState === WebSocket.OPEN) {
@@ -89,7 +105,17 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
           s.next({ data: [], error: { message: data.error.code || 'Erorr in connection' } });
         } else {
           partialChunk =
-            me.updateData(data.data, query, s, headerFields, columnSeq, frameRef, partialChunk, panelId, toDate) || '';
+            me.updateData(
+              data.data,
+              query,
+              s,
+              headerFields,
+              columnSeq,
+              me.frameRefMap[panelId]['frameRef'],
+              partialChunk,
+              panelId,
+              toDate
+            ) || '';
         }
       }
     };
@@ -159,7 +185,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
               if (index !== 0) {
                 const frame = this.createCircularDataFrame(query);
 
-                frame.addField({ name: 'WINDOWSTART', type: FieldType.time });
+                frame.addField({ name: 'WINDOWEND', type: FieldType.time });
                 if (['VARCHAR', 'STRING'].includes(headerFields[f].toUpperCase())) {
                   frame.addField({ name: f, type: FieldType.string });
                 } else {
@@ -190,7 +216,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
           dataFound = true;
           if (query.dimention === 'single') {
             //frameRef.default.add(rowResultData);
-            this.addUpdateValueToFrame(frameRef.default, rowResultData, columnSeq, headerFields);
+            this.addUpdateValueToFrame(frameRef.default, rowResultData, columnSeq);
           } else {
             Object.keys(rowResultData).forEach((key: any, i: number) => {
               //if (key === 'WINDOWSTART') {
@@ -202,12 +228,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
                 [columnSeq[0]]: rowResultData[columnSeq[0]],
                 [key]: rowResultData[key],
               };
-              this.addUpdateValueToFrame(frameRef[key], d, columnSeq, headerFields);
-
-              // frameRef[key].add({
-              //   WINDOWSTART: rowResultData['WINDOWSTART'],
-              //   [key]: rowResultData[key],
-              // });
+              this.addUpdateValueToFrame(frameRef[key], d, columnSeq);
             });
           }
         }
@@ -235,7 +256,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
       toDate = new Date(_toDate);
     }
     const bufferredMaxDate = new Date(toDate);
-    bufferredMaxDate.setSeconds(toDate.getSeconds() + 30);
+    bufferredMaxDate.setSeconds(toDate.getSeconds() + 300);
 
     const outOfRange = new Date(_timeVal) > bufferredMaxDate;
 
@@ -253,43 +274,54 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     return outOfRange;
   }
 
-  addUpdateValueToFrame(frame: CircularDataFrame, rowResultData: any, columnSeq: any, headerFields: any) {
-    let updateAt = -1;
-    const stringFieldsObj = frame.fields.filter(f => f.type === 'string' || f.type === 'time');
-    if (stringFieldsObj.length === 0) {
-      frame.add(rowResultData);
-      return;
-    }
-
-    const stringFields = stringFieldsObj.map(so => {
-      return so.name;
-    });
-    if (frame.values[columnSeq[0]]) {
-      frame.values[columnSeq[0]].toArray().forEach((v: any, i: number) => {
-        if (v === rowResultData[columnSeq[0]]) {
-          updateAt = i;
-        }
+  addUpdateValueToFrame(frame: CircularDataFrame, rowResultData: any, columnSeq: any) {
+    const stringFields = frame.fields
+      .filter(f => f.type === 'string' || f.type === 'time')
+      .map(so => {
+        return so.name;
       });
+
+    const frameTimeStamps = frame.values[columnSeq[0]].toArray();
+    let updateAt = -1;
+    if (frame.values[columnSeq[0]]) {
+      updateAt = frameTimeStamps.findIndex((v: any) => v === rowResultData[columnSeq[0]]);
     }
 
+    let unique = true;
     if (updateAt > 0) {
-      let unique = true;
-      stringFields.forEach((fieldName: any) => {
+      stringFields.every((fieldName: any) => {
         const columnVals: any = frame.values[fieldName];
-        if (columnVals && columnVals[updateAt] && columnVals[updateAt] === rowResultData[fieldName]) {
+        if (columnVals && columnVals.get(updateAt) === rowResultData[fieldName]) {
           unique = true;
         } else {
           unique = false;
-          return;
+          return false;
         }
+        return true;
       });
       if (unique) {
         frame.set(updateAt, rowResultData);
+      }
+    }
+
+    if (updateAt === -1 || !unique) {
+      if (rowResultData[columnSeq[0]] < frameTimeStamps[frameTimeStamps.length - 1]) {
+        //old data point, received late
+        let insertAt = frameTimeStamps.findIndex((v: any) => rowResultData[columnSeq[0]] < v);
+
+        const nextPoints: any[] = [rowResultData];
+        for (let i = insertAt; i < frameTimeStamps.length; i++) {
+          nextPoints.push(frame.get(i));
+        }
+
+        let i = 0;
+        for (; i < nextPoints.length - 1; i++) {
+          frame.set(insertAt++, nextPoints[i]);
+        }
+        frame.add(nextPoints[i]);
       } else {
         frame.add(rowResultData);
       }
-    } else {
-      frame.add(rowResultData);
     }
   }
 
@@ -298,6 +330,109 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
       data: Object.values(frameRef),
       key: refId,
     });
+  }
+
+  // Cleanup thred
+  checkAndClean(panelId: any) {
+    const query: BoltQuery = this.queryMap[panelId]; // get latest query object
+    if (query.cleanupData !== 'true') {
+      this.cleanUpMap[panelId] = false;
+      return;
+    }
+    const frameRef = this.frameRefMap[panelId]['frameRef'];
+    const from = this.frameRefMap[panelId]['fromTime'];
+
+    if (frameRef && Object.keys(frameRef).length > 0 && typeof from === 'string') {
+      // relative time only
+      const s = this.frameRefMap[panelId]['subscription'];
+      const refId = this.frameRefMap[panelId]['refId'];
+      let timeThreshold = new Date();
+
+      if (query.cleanupThreshold === 'startTime') {
+        const timeSec = from.match(/now-(\d+)(\w)/);
+        switch (timeSec![2]) {
+          case 'm':
+            timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * +timeSec![1]);
+            break;
+          case 'h':
+            timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * 60 * +timeSec![1]);
+            break;
+          case 'd':
+            timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * 60 * 24 * +timeSec![1]);
+            break;
+        }
+      } else {
+        timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * query.customCleanupThreshold);
+      }
+
+      let dataFound = false;
+      let oldPointTimings: number[] = [];
+      Object.values(frameRef).forEach((frame: any) => {
+        const timeField = frame.fields.find((f: any) => f.type === 'time');
+        const stringFields = frame.fields.filter((f: any) => f.type === 'string').map((f: any) => f.name);
+        const numberFields = frame.fields.filter((f: any) => f.type === 'number').map((f: any) => f.name);
+
+        if (!timeField) {
+          return;
+        }
+
+        const oldPointPositions: any[] = [];
+        frame.values[timeField.name].toArray().forEach((v: any, i: number) => {
+          if (v < timeThreshold.getTime() && frame.values[timeField.name].toArray()[i] !== undefined) {
+            oldPointPositions.push(i);
+            oldPointTimings.push(v);
+          }
+        });
+
+        if (oldPointPositions.length > 0) {
+          dataFound = true;
+        } else {
+          return;
+        }
+
+        const resultObj: any = {};
+        stringFields.forEach((f: any) => {
+          if (f === 'NAME') {
+            resultObj[f] = true;
+            return;
+          }
+          resultObj[f] = undefined;
+        });
+        numberFields.forEach((f: any) => {
+          if (f === 'LATITUDE' || f === 'LONGITUDE') {
+            resultObj[f] = true;
+            return;
+          }
+          resultObj[f] = query.oldDataReplacementVal === 'null' ? undefined : 0;
+        });
+        oldPointPositions.forEach(pos => {
+          resultObj[timeField.name] = frame.values[timeField.name].toArray()[pos];
+          if (resultObj['LATITUDE']) {
+            resultObj['LATITUDE'] = frame.values['LATITUDE'].toArray()[pos];
+          }
+          if (resultObj['LONGITUDE']) {
+            resultObj['LONGITUDE'] = frame.values['LONGITUDE'].toArray()[pos];
+          }
+          if (resultObj['NAME']) {
+            resultObj['NAME'] = frame.values['NAME'].toArray()[pos];
+          }
+          frame.set(pos, resultObj);
+        });
+      });
+
+      if (dataFound) {
+        console.log('PanelId: ' + panelId + ' cleaning up old points: ' + oldPointTimings.join(', '));
+        console.log('Current time: ' + new Date().valueOf());
+        s.next({
+          data: Object.values(frameRef),
+          key: refId,
+        });
+      }
+    }
+
+    if (this.frameRefMap[panelId]['action'] !== 'stop') {
+      setTimeout(() => this.checkAndClean(panelId), 1000);
+    }
   }
 
   getQueryString(query: BoltQuery, rowTimeStr: string, rowEndTime?: string) {
@@ -321,8 +456,8 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
       queryText += ';';
     }
 
-    const endTime = rowEndTime ? new Date(rowEndTime!).valueOf() : new Date().valueOf();
-    const diff = Math.abs(endTime - new Date(rowTimeStr).valueOf()) / 1000;
+    const endTime = rowEndTime ? new Date(rowEndTime!.replace('+0000', '')).valueOf() : new Date().valueOf();
+    const diff = Math.abs(endTime - new Date(rowTimeStr.replace('+0000', '')).valueOf()) / 1000;
 
     //queryText = queryText.replace('_RANGE_', 1800);
     queryText = queryText.replace('_RANGE_', diff.toFixed(0));
@@ -379,130 +514,6 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     frame.refId = query.refId;
 
     return frame;
-  }
-
-  // Test method
-  async runQuery(q: any, refId: string, subscription: any, panelId: any) {
-    const fetchedResource: any = await fetch(this.baseUrl + '/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(q),
-    });
-
-    console.log('Connection established for: ' + panelId);
-    const reader = await fetchedResource.body.getReader();
-
-    const decoder = new TextDecoder('utf-8');
-    const columnSeq: any = {};
-    let partialChunk = '';
-
-    const frame = new CircularDataFrame({
-      append: 'tail',
-      capacity: 1000,
-    });
-
-    frame.refId = refId;
-    const headerFields: any = {};
-
-    reader.read().then(function pt(done: any) {
-      if (done.done) {
-        return;
-      }
-
-      try {
-        let val = decoder.decode(done.value);
-        console.log('New chunk reveived \n ' + val);
-
-        if (partialChunk) {
-          val = partialChunk + val;
-          partialChunk = '';
-          //console.log('prepended to previous partial chunk \n ' + val);
-        }
-
-        let valJson: any;
-        if (!val) {
-          return reader.read().then(pt);
-        }
-
-        val = val.replace(/\r|\n/g, '');
-        if (!val) {
-          return reader.read().then(pt);
-        }
-
-        if (val.startsWith(',')) {
-          val = val.slice(1);
-        }
-        const orgVal = val;
-
-        if (!val.startsWith('[')) {
-          val = '[' + val;
-        }
-        val = (val.endsWith(',') ? val.slice(0, -1) : val) + (!val.endsWith(']') ? ']' : '');
-
-        try {
-          valJson = JSON.parse(val);
-        } catch (ex) {
-          //console.log(' Error in parsing json. Saving as partial chunk: ' + orgVal);
-          //console.log(ex);
-          partialChunk = orgVal;
-          return reader.read().then(pt);
-        }
-
-        const savedColumnData: any = {};
-        valJson.forEach((rowObj: any) => {
-          if (rowObj['header']) {
-            rowObj['header']['schema'].split(',').map((f: any) => {
-              const matches = f.match(/`(.*?)` (.*)/);
-              headerFields[matches[1]] = matches[2];
-            });
-            Object.keys(headerFields).forEach((f: string, index: number) => {
-              if (f === 'WINDOWSTART') {
-                frame.addField({ name: f, type: FieldType.time });
-              } else if (['VARCHAR', 'STRING'].includes(headerFields[f].toUpperCase())) {
-                frame.addField({ name: f, type: FieldType.string });
-              } else {
-                frame.addField({ name: f, type: FieldType.number });
-              }
-              columnSeq[index] = f;
-            });
-          } else {
-            const columns: any[] = rowObj['row']['columns'];
-            let stringConcat = '';
-            const numericFieldValues: any = {};
-            columns.forEach((col: any, i: number) => {
-              const columnName = columnSeq[i];
-              if (['VARCHAR', 'STRING'].includes(headerFields[columnName])) {
-                stringConcat += col;
-              } else if (columnName !== 'WINDOWSTART') {
-                numericFieldValues[columnName] = col;
-              }
-              savedColumnData[columnName] = col;
-            });
-            if (false) {
-              // stringConcat
-              Object.keys(numericFieldValues).forEach((numericFieldName: any) => {
-                const concatStr = stringConcat + '_' + numericFieldName;
-                savedColumnData[concatStr] = numericFieldValues[numericFieldName];
-                if (!frame.fields.find(f => f.name === concatStr)) {
-                  frame.addField({ name: concatStr, type: FieldType.number });
-                }
-              });
-            }
-          }
-
-          frame.add(savedColumnData);
-          subscription.next({
-            data: [frame],
-            key: refId,
-          });
-        });
-
-        return reader.read().then(pt);
-      } catch (ex) {
-        console.log('Exception in fetching the response. skipping the results for this batch. ' + ex);
-        return reader.read().then(pt);
-      }
-    });
   }
 
   async testDatasource() {
