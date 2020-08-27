@@ -17,8 +17,9 @@ import { Observable, merge } from 'rxjs';
 export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
   baseUrl: string;
   connMap: any = {};
-  frameRefMap: any = {}; // holds all data frames across panels
+  frameRefMap: any = {}; // holds all data frames  panels
   cleanUpMap: any = {}; // panel ID, cleanup status map
+  cleanUpThresholdMap: any = {}; // panel ID, last timestamp cleaned up
   queryMap: any = {}; // panel ID, query object map
   constructor(instanceSettings: DataSourceInstanceSettings<BoltOptions>) {
     super(instanceSettings);
@@ -27,6 +28,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
 
   query(options: DataQueryRequest<BoltQuery>): Observable<DataQueryResponse> {
     const panelId = options.panelId;
+    this.cleanUpThresholdMap = {};
     const streams = options.targets.map(target => {
       const query = defaults(target, defaultQuery);
       return Observable.create((s: any) => {
@@ -288,7 +290,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     }
 
     let unique = true;
-    if (updateAt > 0) {
+    if (updateAt >= 0) {
       stringFields.every((fieldName: any) => {
         const columnVals: any = frame.values[fieldName];
         if (columnVals && columnVals.get(updateAt) === rowResultData[fieldName]) {
@@ -378,11 +380,16 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
 
         const oldPointPositions: any[] = [];
         frame.values[timeField.name].toArray().forEach((v: any, i: number) => {
-          if (v < timeThreshold.getTime() && frame.values[timeField.name].toArray()[i] !== undefined) {
+          if (this.cleanUpThresholdMap[panelId] && v < this.cleanUpThresholdMap[panelId]) {
+            return;
+          }
+          if (v < timeThreshold.getTime()) {
             oldPointPositions.push(i);
             oldPointTimings.push(v);
           }
         });
+
+        this.cleanUpThresholdMap[panelId] = timeThreshold;
 
         if (oldPointPositions.length > 0) {
           dataFound = true;
@@ -431,7 +438,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     }
 
     if (this.frameRefMap[panelId]['action'] !== 'stop') {
-      setTimeout(() => this.checkAndClean(panelId), 1000);
+      setTimeout(() => this.checkAndClean(panelId), 30000);
     }
   }
 
