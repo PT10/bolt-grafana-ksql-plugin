@@ -9,6 +9,7 @@ import {
   DataSourceInstanceSettings,
   FieldType,
   CircularDataFrame,
+  MutableDataFrame,
 } from '@grafana/data';
 
 import { BoltQuery, BoltOptions, defaultQuery } from './types';
@@ -17,13 +18,19 @@ import { Observable, merge } from 'rxjs';
 export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
   baseUrl: string;
   connMap: any = {};
-  frameRefMap: any = {}; // holds all data frames  panels
-  cleanUpMap: any = {}; // panel ID, cleanup status map
+  frameRefMap: any = {}; // Panel ID, data frame map. Holds all data frames across panels
+  //cleanUpMap: any = {}; // panel ID, cleanup status map
   cleanUpThresholdMap: any = {}; // panel ID, last timestamp cleaned up
-  queryMap: any = {}; // panel ID, query object map
+  panelDataStateMap: any = {}; // panel ID, data state (dataFound/headerFound) map used to periodically emit data
+  dataThreadStateMap: any = {}; // panel ID, data state map
+  panelQuerySubscriptionMap: any = {}; // panel ID, query, subscription object map
+  //panelRefreshSequence = 0;
   constructor(instanceSettings: DataSourceInstanceSettings<BoltOptions>) {
     super(instanceSettings);
     this.baseUrl = instanceSettings.url || '';
+
+    //this.checkAndEmit();
+    this.checkAndClean();
   }
 
   query(options: DataQueryRequest<BoltQuery>): Observable<DataQueryResponse> {
@@ -32,7 +39,11 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     const streams = options.targets.map(target => {
       const query = defaults(target, defaultQuery);
       return Observable.create((s: any) => {
-        this.queryMap[panelId] = query;
+        //this.queryMap[panelId] = query;
+        this.panelQuerySubscriptionMap[panelId] = {};
+        this.panelQuerySubscriptionMap[panelId]['query'] = query;
+        this.panelQuerySubscriptionMap[panelId]['subscription'] = s;
+        this.panelQuerySubscriptionMap[panelId]['refId'] = query.refId;
         const { range, rangeRaw } = options;
 
         const from = new Date(range!.from.valueOf());
@@ -60,9 +71,14 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
           this.frameRefMap[panelId] = {};
         }
 
-        if (query.cleanupData === 'true' && !this.cleanUpMap[panelId]) {
-          this.cleanUpMap[panelId] = true;
-          this.checkAndClean(panelId);
+        // if (query.cleanupData === 'true' && !this.cleanUpMap[panelId]) {
+        //   this.cleanUpMap[panelId] = true;
+        //   this.checkAndClean(panelId);
+        // }
+
+        if (!this.dataThreadStateMap[panelId]) {
+          this.dataThreadStateMap[panelId] = true;
+          this.checkAndEmit2(panelId);
         }
 
         this.frameRefMap[panelId]['frameRef'] = {};
@@ -142,7 +158,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     columnSeq: any,
     frameRef: any,
     partialChunk: string,
-    panelId?: string,
+    panelId: string,
     toDate?: Date
   ) {
     try {
@@ -155,11 +171,15 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
 
       const valJson: any = resp.value;
 
+      this.panelDataStateMap[panelId] = {};
+      this.panelDataStateMap[panelId]['dataFound'] = false;
+      this.panelDataStateMap[panelId]['headerFound'] = false;
       let dataFound = false;
       let headerFound = false;
       valJson.forEach((rowObj: any) => {
         const rowResultData: any = {};
         if (rowObj['header']) {
+          this.panelDataStateMap[panelId]['headerFound'] = true;
           headerFound = true;
           rowObj['header']['schema'].split(',').map((f: any) => {
             const matches = f.match(/`(.*?)` (.*)/);
@@ -215,6 +235,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
           });
         }
         if (Object.keys(rowResultData).length > 0) {
+          this.panelDataStateMap[panelId]['dataFound'] = true;
           dataFound = true;
           if (query.dimention === 'single') {
             //frameRef.default.add(rowResultData);
@@ -236,13 +257,13 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
         }
       });
 
-      if (dataFound) {
-        this.emitToPanel(subscription, frameRef, query.refId);
-      } else if (headerFound) {
-        setTimeout(() => {
-          this.emitToPanel(subscription, frameRef, query.refId);
-        }, 30000);
-      }
+      // if (dataFound) {
+      //   this.emitToPanel(subscription, frameRef, query.refId);
+      // } else if (headerFound) {
+      //   setTimeout(() => {
+      //     this.emitToPanel(subscription, frameRef, query.refId);
+      //   }, 30000);
+      // }
 
       return;
     } catch (ex) {
@@ -334,112 +355,152 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     });
   }
 
-  // Cleanup thred
-  checkAndClean(panelId: any) {
-    const query: BoltQuery = this.queryMap[panelId]; // get latest query object
-    if (query.cleanupData !== 'true') {
-      this.cleanUpMap[panelId] = false;
-      return;
-    }
+  checkAndEmit() {
+    Object.keys(this.frameRefMap).forEach(panelId => {
+      const frameRef = this.frameRefMap[panelId]['frameRef'];
+      const subscription = this.panelQuerySubscriptionMap[panelId]['subscription'];
+      const refId = this.panelQuerySubscriptionMap[panelId]['refId'];
+
+      if (this.panelDataStateMap[panelId] && this.panelDataStateMap[panelId]['dataFound']) {
+        this.panelDataStateMap[panelId]['dataFound'] = false;
+        this.emitToPanel(subscription, frameRef, refId);
+      } else if (this.panelDataStateMap[panelId] && this.panelDataStateMap[panelId]['headerFound']) {
+        this.panelDataStateMap[panelId]['headerFound'] = false;
+        setTimeout(() => {
+          this.emitToPanel(subscription, frameRef, refId);
+        }, 10000);
+      }
+    });
+
+    setTimeout(() => this.checkAndEmit(), 500);
+  }
+
+  checkAndEmit2(panelId: any) {
     const frameRef = this.frameRefMap[panelId]['frameRef'];
-    const from = this.frameRefMap[panelId]['fromTime'];
+    const subscription = this.panelQuerySubscriptionMap[panelId]['subscription'];
+    const refId = this.panelQuerySubscriptionMap[panelId]['refId'];
 
-    if (frameRef && Object.keys(frameRef).length > 0 && typeof from === 'string') {
-      // relative time only
-      const s = this.frameRefMap[panelId]['subscription'];
-      const refId = this.frameRefMap[panelId]['refId'];
-      let timeThreshold = new Date();
+    if (this.panelDataStateMap[panelId] && this.panelDataStateMap[panelId]['dataFound']) {
+      this.panelDataStateMap[panelId]['dataFound'] = false;
+      this.emitToPanel(subscription, frameRef, refId);
+    } else if (this.panelDataStateMap[panelId] && this.panelDataStateMap[panelId]['headerFound']) {
+      this.panelDataStateMap[panelId]['headerFound'] = false;
+      setTimeout(() => {
+        this.emitToPanel(subscription, frameRef, refId);
+      }, 30000);
+    }
 
-      if (query.cleanupThreshold === 'startTime') {
-        const timeSec = from.match(/now-(\d+)(\w)/);
-        switch (timeSec![2]) {
-          case 'm':
-            timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * +timeSec![1]);
-            break;
-          case 'h':
-            timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * 60 * +timeSec![1]);
-            break;
-          case 'd':
-            timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * 60 * 24 * +timeSec![1]);
-            break;
-        }
-      } else {
-        timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * query.customCleanupThreshold);
+    setTimeout(() => this.checkAndEmit(), 3000);
+  }
+
+  // Cleanup thred
+  checkAndClean() {
+    Object.keys(this.panelQuerySubscriptionMap).forEach((panelId: any) => {
+      const query: BoltQuery = this.panelQuerySubscriptionMap[panelId]['query']; //this.queryMap[panelId]; // get latest query object
+      if (query.cleanupData !== 'true') {
+        //this.cleanUpMap[panelId] = false;
+        return;
       }
+      const frameRef = this.frameRefMap[panelId]['frameRef'];
+      const from = this.frameRefMap[panelId]['fromTime'];
 
-      let dataFound = false;
-      let oldPointTimings: number[] = [];
-      Object.values(frameRef).forEach((frame: any) => {
-        const timeField = frame.fields.find((f: any) => f.type === 'time');
-        const stringFields = frame.fields.filter((f: any) => f.type === 'string').map((f: any) => f.name);
-        const numberFields = frame.fields.filter((f: any) => f.type === 'number').map((f: any) => f.name);
+      if (frameRef && Object.keys(frameRef).length > 0 && typeof from === 'string') {
+        // relative time only
+        const s = this.frameRefMap[panelId]['subscription'];
+        const refId = this.frameRefMap[panelId]['refId'];
+        let timeThreshold = new Date();
 
-        if (!timeField) {
-          return;
-        }
-
-        const oldPointPositions: any[] = [];
-        frame.values[timeField.name].toArray().forEach((v: any, i: number) => {
-          if (this.cleanUpThresholdMap[panelId] && v < this.cleanUpThresholdMap[panelId]) {
-            return;
+        if (query.cleanupThreshold === 'startTime') {
+          const timeSec = from.match(/now-(\d+)(\w)/);
+          switch (timeSec![2]) {
+            case 'm':
+              timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * +timeSec![1]);
+              break;
+            case 'h':
+              timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * 60 * +timeSec![1]);
+              break;
+            case 'd':
+              timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * 60 * 24 * +timeSec![1]);
+              break;
           }
-          if (v < timeThreshold.getTime()) {
-            oldPointPositions.push(i);
-            oldPointTimings.push(v);
-          }
-        });
-
-        this.cleanUpThresholdMap[panelId] = timeThreshold;
-
-        if (oldPointPositions.length > 0) {
-          dataFound = true;
         } else {
-          return;
+          timeThreshold = new Date(timeThreshold.getTime() - 1000 * 60 * query.customCleanupThreshold);
         }
 
-        const resultObj: any = {};
-        stringFields.forEach((f: any) => {
-          if (f === 'NAME') {
-            resultObj[f] = true;
-            return;
-          }
-          resultObj[f] = undefined;
-        });
-        numberFields.forEach((f: any) => {
-          if (f === 'LATITUDE' || f === 'LONGITUDE') {
-            resultObj[f] = true;
-            return;
-          }
-          resultObj[f] = query.oldDataReplacementVal === 'null' ? undefined : 0;
-        });
-        oldPointPositions.forEach(pos => {
-          resultObj[timeField.name] = frame.values[timeField.name].toArray()[pos];
-          if (resultObj['LATITUDE']) {
-            resultObj['LATITUDE'] = frame.values['LATITUDE'].toArray()[pos];
-          }
-          if (resultObj['LONGITUDE']) {
-            resultObj['LONGITUDE'] = frame.values['LONGITUDE'].toArray()[pos];
-          }
-          if (resultObj['NAME']) {
-            resultObj['NAME'] = frame.values['NAME'].toArray()[pos];
-          }
-          frame.set(pos, resultObj);
-        });
-      });
+        let dataFound = false;
+        let oldPointTimings: number[] = [];
+        Object.values(frameRef).forEach((frame: any) => {
+          const timeField = frame.fields.find((f: any) => f.type === 'time');
+          const stringFields = frame.fields.filter((f: any) => f.type === 'string').map((f: any) => f.name);
+          const numberFields = frame.fields.filter((f: any) => f.type === 'number').map((f: any) => f.name);
 
-      if (dataFound) {
-        console.log('PanelId: ' + panelId + ' cleaning up old points: ' + oldPointTimings.join(', '));
-        console.log('Current time: ' + new Date().valueOf());
-        s.next({
-          data: Object.values(frameRef),
-          key: refId,
+          if (!timeField) {
+            return;
+          }
+
+          const oldPointPositions: any[] = [];
+          frame.values[timeField.name].toArray().forEach((v: any, i: number) => {
+            if (this.cleanUpThresholdMap[panelId] && v < this.cleanUpThresholdMap[panelId]) {
+              return;
+            }
+            if (v < timeThreshold.getTime()) {
+              oldPointPositions.push(i);
+              oldPointTimings.push(v);
+            }
+          });
+
+          this.cleanUpThresholdMap[panelId] = timeThreshold;
+
+          if (oldPointPositions.length > 0) {
+            dataFound = true;
+          } else {
+            return;
+          }
+
+          const resultObj: any = {};
+          stringFields.forEach((f: any) => {
+            if (f === 'NAME') {
+              resultObj[f] = true;
+              return;
+            }
+            resultObj[f] = undefined;
+          });
+          numberFields.forEach((f: any) => {
+            if (f === 'LATITUDE' || f === 'LONGITUDE') {
+              resultObj[f] = true;
+              return;
+            }
+            resultObj[f] = query.oldDataReplacementVal === 'null' ? undefined : 0;
+          });
+          oldPointPositions.forEach(pos => {
+            resultObj[timeField.name] = frame.values[timeField.name].toArray()[pos];
+            if (resultObj['LATITUDE']) {
+              resultObj['LATITUDE'] = frame.values['LATITUDE'].toArray()[pos];
+            }
+            if (resultObj['LONGITUDE']) {
+              resultObj['LONGITUDE'] = frame.values['LONGITUDE'].toArray()[pos];
+            }
+            if (resultObj['NAME']) {
+              resultObj['NAME'] = frame.values['NAME'].toArray()[pos];
+            }
+            frame.set(pos, resultObj);
+          });
         });
+
+        if (dataFound) {
+          console.log('PanelId: ' + panelId + ' cleaning up old points: ' + oldPointTimings.join(', '));
+          console.log('Current time: ' + new Date().valueOf());
+          s.next({
+            data: Object.values(frameRef),
+            key: refId,
+          });
+        }
       }
-    }
+    });
 
-    if (this.frameRefMap[panelId]['action'] !== 'stop') {
-      setTimeout(() => this.checkAndClean(panelId), 30000);
-    }
+    //if (this.frameRefMap[panelId]['action'] !== 'stop') {
+    setTimeout(() => this.checkAndClean(), 30000);
+    //}
   }
 
   getQueryString(query: BoltQuery, rowTimeStr: string, rowEndTime?: string) {
@@ -513,11 +574,12 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     return { value: valJson, partialChunk: undefined };
   }
 
-  createCircularDataFrame(query: BoltQuery): CircularDataFrame {
-    const frame = new CircularDataFrame({
-      append: 'tail',
-      capacity: query.frameSize,
-    });
+  createCircularDataFrame(query: BoltQuery): MutableDataFrame {
+    const frame = new MutableDataFrame();
+    //   {
+    //   append: 'tail',
+    //   capacity: query.frameSize,
+    // }
     frame.refId = query.refId;
 
     return frame;

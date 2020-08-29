@@ -1,6 +1,7 @@
 const http = require('http');
 const WebSocketServer = require('websocket').server;
 const SimpleNodeLogger = require('simple-node-logger');
+const resultMap = {};
 const opts = {
   logFilePath:'app.log',
   timestampFormat:'YYYY-MM-DD HH:mm:ss.SSS'
@@ -19,12 +20,17 @@ const wsServer = new WebSocketServer({
   httpServer: server
 });
 
+emitData();
+
 wsServer.on('request', function(request) {
   const connection = request.accept(null, request.origin);
   connection.on('message', function(message) {
     const reqData = JSON.parse(message.utf8Data);
     log.info("Running panel id: " + reqData.panelId + ", query: ", JSON.stringify(reqData.query) + ", type: " + reqData.type);
 
+    resultMap[reqData.panelId] = {};
+    resultMap[reqData.panelId]['conn'] = connection;
+    resultMap[reqData.panelId]['data'] = '';
     let req;
     const path = reqData.type === 'query' ? '/query' : '/ksql';
     const cntType = reqData.type === 'query' ? 'application/json' : 'application/vnd.ksql.v1+json; charset=utf-8';
@@ -47,9 +53,10 @@ wsServer.on('request', function(request) {
           req.destroy();
           return;
         }
-        if (data.match(/\w+/)) {
+        if (data.match(/[^\s]/)) {
           log.debug("Response for panelId: " + reqData.panelId + ". Data: " + data);
-          connection.sendUTF(JSON.stringify({active: activeReqSeq, data: data}));
+          resultMap[reqData.panelId]['data'] += data;
+          //connection.sendUTF(JSON.stringify({active: activeReqSeq, data: data}));
         } else {
           //console.log("Empty response: " + data);
         }
@@ -62,6 +69,7 @@ wsServer.on('request', function(request) {
 
     req = http.request(options, callback);
     req.write(JSON.stringify(reqData.query));
+    //req.write("{\"ksql\":" + reqData.query.ksql + ", \"streamsProperties\":" + reqData.query.streamsProperties +"}")
     req.end();
 
     req.on('error', (err) => {
@@ -73,3 +81,18 @@ wsServer.on('request', function(request) {
     log.info('Client has disconnected. Reason: ' + reasonCode + ' Description: ' + description);
   });
 });
+
+function emitData() {
+  Object.keys(resultMap).forEach(panelId => {
+    const conn = resultMap[panelId]['conn'];
+    const data = resultMap[panelId]['data'];
+    if (!data) {
+      return;
+    }
+
+    conn.sendUTF(JSON.stringify({active: activeReqSeq, data: data}));
+    resultMap[panelId]['data'] = '';
+  });
+
+  setTimeout(() => emitData(), 1000);
+}
