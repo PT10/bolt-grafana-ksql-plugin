@@ -53,6 +53,7 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
       query: query.query || '',
       error: query.error || '',
       dimention: query.dimention || 'single',
+      visualType: query.visualType || 'metric',
       frameSize: query.frameSize || 1000,
       info: query.info || '',
       parsingStream: query.parsingStream || '',
@@ -77,6 +78,7 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
       parsingStream,
       filteringStream,
       query,
+      visualType,
       dimention,
       frameSize,
       cleanupData,
@@ -152,6 +154,7 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
               <InlineFormLabel>Query</InlineFormLabel>
               <TextArea
                 type="text"
+                css=""
                 value={query}
                 height={180}
                 onChange={this.onFieldValueChange}
@@ -167,6 +170,17 @@ export class BoltQueryEditor extends PureComponent<Props, State> {
               <select value={dimention} name="dimention" onChange={this.onFieldValueChange}>
                 <option value={'single'}>{'Single'}</option>
                 <option value={'multiple'}>{'Multiple'}</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="gf-form-inline">
+          <div className="gf-form">
+            <div className="gf-form">
+              <InlineFormLabel>Visualisation type</InlineFormLabel>
+              <select value={visualType} name="visualType" onChange={this.onFieldValueChange}>
+                <option value={'logs'}>{'Logs'}</option>
+                <option value={'metric'}>{'Metric'}</option>
               </select>
             </div>
           </div>

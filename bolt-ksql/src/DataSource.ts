@@ -4,7 +4,7 @@ import defaults from 'lodash/defaults';
 
 import {
   DataQueryRequest,
-  DataQueryResponse,
+  //DataQueryResponse,
   DataSourceApi,
   DataSourceInstanceSettings,
   FieldType,
@@ -33,7 +33,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     this.checkAndClean();
   }
 
-  query(options: DataQueryRequest<BoltQuery>): Observable<DataQueryResponse> {
+  query(options: DataQueryRequest<BoltQuery>): any {
     const panelId = options.panelId;
     this.cleanUpThresholdMap = {};
     const streams = options.targets.map(target => {
@@ -174,13 +174,13 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
       this.panelDataStateMap[panelId] = {};
       this.panelDataStateMap[panelId]['dataFound'] = false;
       this.panelDataStateMap[panelId]['headerFound'] = false;
-      let dataFound = false;
-      let headerFound = false;
+      //let dataFound = false;
+      //let headerFound = false;
       valJson.forEach((rowObj: any) => {
         const rowResultData: any = {};
         if (rowObj['header']) {
           this.panelDataStateMap[panelId]['headerFound'] = true;
-          headerFound = true;
+          // headerFound = true;
           rowObj['header']['schema'].split(',').map((f: any) => {
             const matches = f.match(/`(.*?)` (.*)/);
             headerFields[matches[1]] = matches[2];
@@ -190,7 +190,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             if (query.dimention === 'single') {
               let frame = frameRef['default'];
               if (!frame) {
-                frame = this.createCircularDataFrame(query);
+                frame = this.createCircularDataFrame(query, query.visualType);
                 frameRef['default'] = frame;
               }
 
@@ -205,7 +205,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
             } else {
               //if (f !== 'WINDOWSTART') {
               if (index !== 0) {
-                const frame = this.createCircularDataFrame(query);
+                const frame = this.createCircularDataFrame(query, query.visualType);
 
                 frame.addField({ name: 'WINDOWEND', type: FieldType.time });
                 if (['VARCHAR', 'STRING'].includes(headerFields[f].toUpperCase())) {
@@ -236,7 +236,7 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
         }
         if (Object.keys(rowResultData).length > 0) {
           this.panelDataStateMap[panelId]['dataFound'] = true;
-          dataFound = true;
+          //dataFound = true;
           if (query.dimention === 'single') {
             //frameRef.default.add(rowResultData);
             this.addUpdateValueToFrame(frameRef.default, rowResultData, columnSeq);
@@ -574,13 +574,19 @@ export class BoltDataSource extends DataSourceApi<BoltQuery, BoltOptions> {
     return { value: valJson, partialChunk: undefined };
   }
 
-  createCircularDataFrame(query: BoltQuery): MutableDataFrame {
+  createCircularDataFrame(query: BoltQuery, visualType: string): MutableDataFrame {
     const frame = new MutableDataFrame();
     //   {
     //   append: 'tail',
     //   capacity: query.frameSize,
     // }
     frame.refId = query.refId;
+
+    if (visualType === 'logs') {
+      frame.meta = {
+        preferredVisualisationType: 'logs',
+      };
+    }
 
     return frame;
   }
